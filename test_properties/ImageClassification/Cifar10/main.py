@@ -21,7 +21,7 @@ from utils import save_json
 from train import train
 from sgd import sgd
 from adam import Adam
-
+from properties_checker import compute_linear_approx, compute_smoothness
 # wandb.login()
 
 parser = argparse.ArgumentParser(description='image-classification')
@@ -39,6 +39,7 @@ parser.add_argument('--name', default='experiment', type=str, help='experiment n
 parser.add_argument('--optimizer', default='sgd', type=str, help='optimizer name')
 parser.add_argument('--model', default='resnet18', type=str, help='model name')
 parser.add_argument('--save', default=False, type=bool, help='save param')
+parser.add_argument('--id', default=1, type=int,help='Wandb id to use.')
 args = parser.parse_args()
 
 
@@ -70,9 +71,43 @@ testloader = torch.utils.data.DataLoader(
     testset, batch_size=100, shuffle=False, num_workers=num_workers)
 
 
+# class Cifar10CnnModel(nn.Module):
+#     def __init__(self):
+#         super().__init__()
+#         self.network = nn.Sequential(
+#             nn.Conv2d(3, 32, kernel_size=3, padding=1),
+#             nn.ReLU(),
+#             nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+#             nn.ReLU(),
+#             nn.MaxPool2d(2, 2), # output: 64 x 16 x 16
+
+#             nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+#             nn.ReLU(),
+#             nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
+#             nn.ReLU(),
+#             nn.MaxPool2d(2, 2), # output: 128 x 8 x 8
+
+#             nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
+#             nn.ReLU(),
+#             nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1),
+#             nn.ReLU(),
+#             nn.MaxPool2d(2, 2), # output: 256 x 4 x 4
+
+#             nn.Flatten(), 
+#             nn.Linear(256*4*4, 1024),
+#             nn.ReLU(),
+#             nn.Linear(1024, 512),
+#             nn.ReLU(),
+#             nn.Linear(512, 10))
+        
+#     def forward(self, xb):
+#         return self.network(xb)
+# epochs = args.epochs
+# device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# net = Cifar10CnnModel().to(device)
 print('=== Building model.. ===')
 
-# model parameters
+# # model parameters
 epochs = args.epochs
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if args.model == 'resnet18':
@@ -86,17 +121,17 @@ elif args.model == 'DLA_GN':
 
 criterion = nn.CrossEntropyLoss()
 if args.optimizer == "sgd":
-    optimizer = sgd(net.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    optimizer = torch.optim.SGD(net.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
 elif args.optimizer == "adam":
-    optimizer = Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 if args.scheduler == 'cosine':
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 elif args.scheduler == 'ReduceLROnPlateau':
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer)
 #Load optimal params
-checkpoint = torch.load('getLossGN.pth.tar')
-optimizer.save_param(param_dict =checkpoint[args.epochs -1]['state_dict'])
-opt_loss = checkpoint[args.epochs -1]['loss']
+# checkpoint = torch.load('getLossGN.pth.tar')
+# optimizer.save_param(param_dict =checkpoint[args.epochs -1]['state_dict'])
+# opt_loss = checkpoint[args.epochs -1]['loss']
 # ADAM
 # ...
 
@@ -110,7 +145,7 @@ if __name__ == '__main__':
 
    
     # standard non-private training
-    stats = train(net, trainloader, testloader, epochs, criterion, optimizer, scheduler, device,args, opt_loss)
+    stats = train(net, trainloader, testloader, epochs, criterion, optimizer, scheduler, device,args)
  
     # stats.update(args)
 
