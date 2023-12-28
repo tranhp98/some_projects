@@ -18,7 +18,10 @@ import torch.utils.data.distributed
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
-
+from resnet_GN import ResNet18_GN
+from properties_checker import compute_linear_approx, compute_smoothness
+# from properties_checker import compute_linear_approx, compute_smoothness,compute_L2_norm,compute_L1_norm, compute_PL,compute_inner_product, cosine_similarity
+# import hacks
 
 from SGDHess import SGDHess
 from STORM import STORM
@@ -28,7 +31,7 @@ model_names = sorted(name for name in models.__dict__
     and callable(models.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('data', metavar='DIR',
+parser.add_argument('--data', metavar='DIR',
                     help='path to dataset')
 parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18',
                     choices=model_names,
@@ -41,7 +44,7 @@ parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=256, type=int,
+parser.add_argument('-b', '--batch-size', default=128, type=int,
                     metavar='N',
                     help='mini-batch size (default: 256), this is the total '
                          'batch size of all GPUs on the current node when '
@@ -67,7 +70,7 @@ parser.add_argument('--rank', default=-1, type=int,
                     help='node rank for distributed training')
 # parser.add_argument('--dist-url', default='tcp://224.66.41.62:23456', type=str,
 #                     help='url used to set up distributed training')
-parser.add_argument('--dist-url', default='tcp://127.0.0.1:1234', type=str,
+parser.add_argument('--dist-url', default='tcp://127.0.0.1:1235', type=str,
                     help='url used to set up distributed training')
 parser.add_argument('--dist-backend', default='nccl', type=str,
                     help='distributed backend')
@@ -75,6 +78,11 @@ parser.add_argument('--seed', default=None, type=int,
                     help='seed for initializing training. ')
 parser.add_argument('--gpu', default=None, type=int,
                     help='GPU id to use.')
+parser.add_argument(
+        "--id",
+         type=str,
+        default="1"
+    )
 parser.add_argument('--multiprocessing-distributed', action='store_true',
                     help='Use multi-processing distributed training to launch '
                          'N processes per node, which has N GPUs. This is the '
@@ -84,9 +92,39 @@ parser.add_argument('--save', default=False, type=bool, help='save param')
 parser.add_argument('--name', default='experiment', type=str, help='experiment name')
 
 best_acc1 = 0
+# def compute_linear_approx(model, prev_param):
+#     #this function compute the following inner product: <\nabla f(x_t), x_t - x_{t-1}>
+#     # It takes 2 arguments:
+#     # 1. model: the model that we are running. We need this to access the current parameters and their gradients. 
+#     # 2. prev_param: the model parameters in the previous iteration (x_{t-1})
+#     linear_approx = 0
+#     i = 0
+#     with torch.no_grad():
+#         for p in model.parameters():
+#             linear_approx+= torch.dot(torch.flatten(p.grad), torch.flatten(p.add(-prev_param[i]))).item()
+#             i+=1
+#     return linear_approx
 
+# def compute_smoothness(model, prev_param, prev_grad):
+#     # This function compute the smoothness constant which is L = max(\|\nabla f(x_t) -\nabla f(x_{t-1})\| /  \|f(x_t) -f(x_{t-1})\|)
+#     # It takes 4 arguments:
+#     # 1. model: the model that we are running. We need this to access the current parameters and their gradients. 
+#     # 2. prev_param: the model parameters in the previous iteration (x_{t-1})
+#     # 3. prev_grad: the gradient of the model parameters in the previous iteration (\nabla f(x_{t-1}))
+#     # 4. L: the current smoothness constant (since we want to find the largest L that satisfies the smoothness condition)
+#     sum_num = 0
+#     sum_denom = 0
+#     i=0
+#     with torch.no_grad():
+#         for p in model.parameters():
+#             sum_num += torch.norm(p.grad - prev_grad[i])
+#             sum_denom += torch.norm(p - prev_param[i])
+#             i+=1
+#     return sum_num/sum_denom
+# ####
 
 def main():
+    # hacks.apply()
     args = parser.parse_args()
     if args.seed is not None:
         random.seed(args.seed)
@@ -138,6 +176,7 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         print("=> creating model '{}'".format(args.arch))
         model = models.__dict__[args.arch]()
+    # model = ResNet18_GN()
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
@@ -145,6 +184,9 @@ def main_worker(gpu, ngpus_per_node, args):
         # For multiprocessing distributed, DistributedDataParallel constructor
         # should always set the single device scope, otherwise,
         # DistributedDataParallel will use all available devices.
+        rank = int(args.gpu)
+        print(f"RANK: {rank}")
+        time.sleep(rank)
         print("reach distributed!")
         if args.gpu is not None:
             torch.cuda.set_device(args.gpu)
@@ -177,7 +219,7 @@ def main_worker(gpu, ngpus_per_node, args):
     #optimizer = torch.optim.SGD(model.parameters(), args.lr,
     #                            momentum=args.momentum,
     #                            weight_decay=args.weight_decay)
-    optimizer = sgd(model.parameters(), lr = args.lr, momentum = args.momentum, weight_decay = args.weight_decay)
+    optimizer = torch.optim.SGD(model.parameters(), lr = args.lr, momentum = args.momentum, weight_decay = args.weight_decay)
     wandb.init(project='test_convexity', config=args, name=args.name)
     wandb.watch(model)
     # optionally resume from a checkpoint
@@ -239,6 +281,8 @@ def main_worker(gpu, ngpus_per_node, args):
         validate(val_loader, model, criterion, args)
         return
     acc = []
+    filename = "checkpoint_BN/0.pth.tar"
+    torch.save({'state_dict':optimizer.state_dict(), 'model_dict': model.state_dict() }, filename)
     # dict to save last iterate of each epoch
     for epoch in range(args.start_epoch, args.epochs):
         print("reach training!")
@@ -249,31 +293,57 @@ def main_worker(gpu, ngpus_per_node, args):
         # if args.save:
         #     save_param[epoch] = {'state_dict': optimizer.state_dict(), 'loss':loss}
         # train for one epoch
-        convexity_gap, L, current_loss, prev_loss,ratio = train(train_loader, model, criterion, optimizer, epoch, args)
-
+        # name = 'checkpoint/'+ str(epoch+1) + ".pth.tar"
+        # saved_checkpoint = torch.load(name)
+        # optimizer.save_param(saved_checkpoint['state_dict'])
+        # prev_loss = saved_checkpoint['current_loss']
+        prev_grad, prev_param, current_grad, current_param, prev_loss, current_loss, train_loss, num, denom, exp_avg_L_1, exp_avg_L_2 ,exp_avg_gap_1 ,exp_avg_gap_2, convexity_gap, L  = train(train_loader, model, criterion, optimizer, epoch, args)
+        # prev_grad: \nabla f(w_T,x_T)
+        # current_grad: \nabla f(w_{T+1},x_T)
+        # prev_param: w_T
+        # current_param : w_{T+1}
+        # prev_loss: f(w_T,x_T)
+        # current_loss: f(w_{T+1},x_T)
         # evaluate on validation set
         acc1 = validate(val_loader, model, criterion, args)
 
         # remember best acc@1 and save checkpoint
         is_best = acc1 > best_acc1
         best_acc1 = max(acc1, best_acc1)
+        wandb.log(
+        {
+            "train_loss": train_loss,
+            "convexity_gap": convexity_gap,
+            "smoothness": L,
+            "linear/loss_gap": num/denom,
+            "numerator" : num,
+            "denominator": denom,
+            'exp_avg_L_.99': exp_avg_L_1,
+            'exp_avg_L_.9999': exp_avg_L_2, 
+            "exp_avg_gap_.99":  exp_avg_gap_1, 
+            "exp_avg_gap_.9999":  exp_avg_gap_2, 
+            'accuracy': best_acc1
+        }
+    )
         # print("best_acc1", best_acc1)
         # print("data type", type(best_acc1))
         acc.append(best_acc1)
         if not args.multiprocessing_distributed or (args.multiprocessing_distributed
                 and args.rank % ngpus_per_node == 0):
-            # save_checkpoint({
-            #     'epoch': epoch + 1,
-            #     'arch': args.arch,
-            #     'state_dict': model.state_dict(),
-            #     'best_acc1': best_acc1,
-            #     'optimizer' : optimizer.state_dict(),
-            # }, is_best)
+            save_checkpoint({
+                'epoch': epoch + 1,
+                'arch': args.arch,
+                'state_dict': model.state_dict(),
+                'best_acc1': best_acc1,
+                'optimizer' : optimizer.state_dict(),
+            }, is_best)
             if args.save:
                 filename = "checkpoint/" + str(epoch+1) + ".pth.tar"
-                torch.save({'state_dict':optimizer.state_dict(), 'current_loss': current_loss, 'prev_loss': prev_loss
-                            , 'best_acc1': best_acc1, 'arch': args.arch, 'model_dict': model.state_dict() }, filename)
-        wandb.log({'best_acc1': best_acc1, 'convexity_gap': convexity_gap, 'smoothness_constant': L, 'innerProd/gap': ratio})
+                torch.save({'state_dict':optimizer.state_dict(),'prev_grad':prev_grad, 
+                            'prev_param': prev_param, 'current_grad':current_grad, 'current_param': current_param
+                            , 'prev_loss':prev_loss , 'current_loss': current_loss
+                            ,'best_acc1': best_acc1, 'arch': args.arch, 'model_dict': model.state_dict() }, filename)
+        # wandb.log({'best_acc1': best_acc1, 'convexity_gap': convexity_gap, 'smoothness_constant': L, 'innerProd/gap': ratio})
     # np.savetxt('test_sgdhess.csv', acc, delimiter=',')
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
@@ -290,27 +360,55 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     # switch to train mode
     model.train()
     end = time.time()
-    L = 0
     convexity_gap = 0
-    current_loss = 0
-    prev_loss = 0
+    L = 0
     num = 0
     denom = 0
+    prev_loss = 0
+    current_loss = 0
+    total_loss = 0
+    exp_avg_L_1 = 0
+    exp_avg_L_2 = 0
+    exp_avg_gap_1 = 0
+    exp_avg_gap_2 = 0
+    iteration = 0
     step = 0
+    prev_grad = [torch.zeros_like(p) for p in model.parameters()]
+    prev_param = [torch.zeros_like(p) for p in model.parameters()] 
+    current_grad = [torch.zeros_like(p) for p in model.parameters()]
+    current_param = [torch.zeros_like(p) for p in model.parameters()] 
+    iterator = iter(train_loader)
+    prev_batch = next(iterator)
     # current_loss = 0
-    for i, (images, target) in enumerate(train_loader):
+    for i, (images, target) in enumerate(iterator):
         # measure data loading time
+        if i%100 == 0:
+            print("currently in iteration", i)
         data_time.update(time.time() - end)
         if args.gpu is not None:
             images = images.cuda(args.gpu, non_blocking=True)
         if torch.cuda.is_available():
             target = target.cuda(args.gpu, non_blocking=True)
-        if i >0: #updating prev_prev_param
-            prev_loss = current_loss
-            optimizer.save_prev_param()
+        #compute \nabla f(w_t,x_{t-1})
+        prev_batch_image = prev_batch[0].cuda(args.gpu, non_blocking=True)
+        prev_batch_target = prev_batch[1].cuda(args.gpu, non_blocking=True)
+        prev_batch_outputs = model(prev_batch_image) 
+        prev_batch_loss = criterion(prev_batch_outputs, prev_batch_target) #f(w_t,x_{t-1})
+        current_loss = prev_batch_loss.item() 
+        prev_batch_loss.backward()
+        i = 0
+        with torch.no_grad():
+            for p in model.parameters():
+                current_grad[i].copy_(p.grad) #\nabla f(w_t,x_{t-1})
+                current_param[i].copy_(p) #w_t
+                i+=1
+        # zero grad to do the actual update
+        optimizer.zero_grad()
+        
         # compute output
         output = model(images)
-        loss = criterion(output, target)
+        loss = criterion(output, target) #f(w_t,x_t)
+        total_loss +=loss.item()
         # measure accuracy and record loss
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
         losses.update(loss.item(), images.size(0))
@@ -320,17 +418,42 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         # compute gradient and do SGD step
         optimizer.zero_grad()
         loss.backward()
-        if i>0:
-            linear_approx = optimizer.check_convexity()
-            L = max(L, optimizer.check_smoothness())
-            num += linear_approx
-            denom +=loss.item() - prev_loss
-            # ratio = linear_approx/(loss.item() - prev_loss)
-            convexity_gap += loss.item() - prev_loss - linear_approx 
-            # convexity_gap += ( current_convexity_gap - convexity_gap)/(i+1)
-        optimizer.save_param()
+        if step >0:
+            # prev_loss = current_loss
+            # # print("prev s", current_loss)
+            # # print("current loss", loss.detach().float() )
+            # i = 0
+            # with torch.no_grad():
+            #     for p in model.parameters():
+            #         prev_grad[i].copy_(current_grad[i])
+            #         prev_param[i].copy_(current_param[i])
+            #         i+=1
+            # get the inner product
+            linear_approx = compute_linear_approx(current_param, current_grad, prev_param)
+            # get the smoothness constant, small L means function is relatively smooth
+            current_L = compute_smoothness(current_param, current_grad, prev_param, prev_grad)
+            L = max(L,current_L)
+            # L = max(L,compute_smoothness(model, current_param, current_grad))
+            # this is another quantity that we want to check: linear_approx / loss_gap. The ratio is positive is good
+            num+= linear_approx
+            denom+= current_loss - prev_loss # f(w_t,x_{t-1}) - f(w_{t-1},x_{t-1})
+            current_convexity_gap = current_loss - prev_loss - linear_approx 
+            exp_avg_gap_1 = 0.99*exp_avg_gap_1 + (1-0.99)*current_convexity_gap
+            exp_avg_gap_2 = 0.9999*exp_avg_gap_2 + (1-0.9999)*current_convexity_gap
+            exp_avg_L_1 = 0.99*exp_avg_L_1+ (1-0.99)*current_L
+            exp_avg_L_2 = 0.9999*exp_avg_L_2+ (1-0.9999)*current_L
+            convexity_gap+= current_convexity_gap
+        # optimizer.save_param()
+        i = 0
+        with torch.no_grad():
+            for p in model.parameters():
+                prev_grad[i].copy_(p.grad) #hold \nabla f(w_{t-1},x_{t-1}) for next iteration
+                prev_param[i].copy_(p) # hold w_{t-1 } for next iteration
+                i+=1
         optimizer.step()
-        current_loss = loss.item()
+        prev_loss = loss.item() 
+        prev_batch = (images, target)
+        # current_loss = loss.item()
         step+=1
         # print("convexity gap", convexity_gap, "iteration", i )
         # measure elapsed time
@@ -339,7 +462,21 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         if i % args.print_freq == 0:
             progress.display(i)
     # optimizer.save_param()
-    return convexity_gap/step, L,current_loss, prev_loss, num/denom
+    prev_batch_image = prev_batch[0].cuda(args.gpu, non_blocking=True)
+    prev_batch_target = prev_batch[1].cuda(args.gpu, non_blocking=True)
+    prev_batch_outputs = model(prev_batch_image) 
+    prev_batch_loss = criterion(prev_batch_outputs, prev_batch_target) #f(w_t,x_{t-1})
+    current_loss = prev_batch_loss.item() 
+    prev_batch_loss.backward()
+    i = 0
+    with torch.no_grad():
+        for p in model.parameters():
+            current_grad[i].copy_(p.grad) #\nabla f(w_t,x_{t-1})
+            current_param[i].copy_(p) #w_t
+            i+=1
+    # zero grad to do the actual update
+    optimizer.zero_grad()
+    return prev_grad, prev_param, current_grad, current_param, prev_loss, current_loss, total_loss/step, num, denom, exp_avg_L_1, exp_avg_L_2 ,exp_avg_gap_1 ,exp_avg_gap_2, convexity_gap/step, L
 def validate(val_loader, model, criterion, args):
     batch_time = AverageMeter('Time', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
@@ -385,7 +522,7 @@ def validate(val_loader, model, criterion, args):
     return top1.avg
 
 
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
+def save_checkpoint(state, is_best, filename='main_checkpoint.pth.tar'):
     torch.save(state, filename)
     if is_best:
         shutil.copyfile(filename, 'model_best.pth.tar')
